@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build:local
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist-local
+
+      - name: Install Chromium for the end-to-end tests
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests (UI against the mock API)
+        run: npm run e2e
+
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Format
+        run: test -z "$(find . -name '*.go' -not -path './web/*' -print0 | xargs -0 gofmt -l)"
+
+      - name: Vet
+        run: |
+          go vet ./...
+          GOOS=linux go vet ./...
+
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz the mux for a short while
+        run: |
+          go test -run xxx -fuzz FuzzSessionInput -fuzztime 20s ./mux
+          go test -run xxx -fuzz FuzzHeaderValidate -fuzztime 10s ./mux
+
+  drill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y nftables iproute2
+
+      - name: Drills (root, fresh network namespaces)
+        run: |
+          sudo env "PATH=$PATH" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" \
+            MTPROTO_NETNS_DRILL=1 go test -count=1 -run Drill -v ./...
