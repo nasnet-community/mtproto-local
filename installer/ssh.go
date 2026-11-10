@@ -257,7 +257,13 @@ func (c *Conn) run(ctx context.Context, cmd string, stdin io.Reader, prefix []by
 		return out.String(), nil
 	case <-ctx.Done():
 		sess.Close()
-		return out.String(), ctx.Err()
+		// the session may still be copying into out until Run returns
+		select {
+		case <-done:
+			return out.String(), ctx.Err()
+		case <-time.After(5 * time.Second):
+			return "", ctx.Err()
+		}
 	}
 }
 

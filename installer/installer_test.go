@@ -324,6 +324,22 @@ func TestTargetDialIsUsedForEverySSHConnection(t *testing.T) {
 	}
 }
 
+// A command that outlives its context: the output read back must not race
+// the session still copying into it (go test -race catches it).
+func TestACommandCutByItsContextKeepsItsOutput(t *testing.T) {
+	h := startFakeHost(t)
+	c := connect(t, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	out, err := c.Run(ctx, "while :; do echo x; done", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.HasPrefix(out, "x\n") {
+		t.Fatalf("out starts %q", out[:min(len(out), 20)])
+	}
+}
+
 func TestWrongSudoPasswordFailsEarly(t *testing.T) {
 	h := startFakeHost(t)
 	h.user = "ubuntu"
